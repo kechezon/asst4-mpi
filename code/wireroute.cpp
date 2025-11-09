@@ -188,6 +188,8 @@ int main(int argc, char *argv[]) {
    * Feel free to structure the algorithm into different functions
    * Use MPI to parallelize the algorithm. 
    */
+  
+  //this will broadcast the grid dimensions and wire data to all of the processors
   MPI_Bcast(&dim_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
   MPI_Bcast(&dim_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
   MPI_Bcast(&num_wires, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
@@ -196,11 +198,22 @@ int main(int argc, char *argv[]) {
     wires.resize(num_wires);
   }
 
-  if (pid == ROOT) {
-    occupancy.resize(dim_y, std::vector<int>(dim_x, 0));
+  //broadcast all the wire data
+  for (int i = 0; i < num_wires; i++) {
+    MPI_Bcast(&wires[i].start_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].start_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].end_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].end_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].bend1_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].bend1_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+  }
+
+  //initialize the occcupancy matrix for all processors
+  occupancy.resize(dim_y, std::vector<int>(dim_x, 0));
 
 
-    //helper functions from asst3
+  //helper functions must be outside so all processors can use them
+   //helper functions from asst3
     // INCLUSIVE
     auto horizontal_line = [&](int x1, int x2, int y, int val) {
       if (x1 < 0 || x2 >= dim_x || x2 < 0 || x2 >= dim_x || y < 0 || y >= dim_y) {
@@ -372,11 +385,12 @@ int main(int argc, char *argv[]) {
     abort();
   };
 
+  // Initialize occupancy with all wires, all processors will do this
 
-    //asst 3 accross wires implementation
-  
-  }
 
+  //main loop
+
+  //note that only root should do the updates
   if (pid == ROOT) {
     const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();
     std::cout << "Computation time (sec): " << std::fixed << std::setprecision(10) << compute_time << '\n';

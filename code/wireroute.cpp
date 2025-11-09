@@ -188,6 +188,194 @@ int main(int argc, char *argv[]) {
    * Feel free to structure the algorithm into different functions
    * Use MPI to parallelize the algorithm. 
    */
+  MPI_Bcast(&dim_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+  MPI_Bcast(&dim_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+  MPI_Bcast(&num_wires, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+
+  if (pid != ROOT) {
+    wires.resize(num_wires);
+  }
+
+  if (pid == ROOT) {
+    occupancy.resize(dim_y, std::vector<int>(dim_x, 0));
+
+
+    //helper functions from asst3
+    // INCLUSIVE
+    auto horizontal_line = [&](int x1, int x2, int y, int val) {
+      if (x1 < 0 || x2 >= dim_x || x2 < 0 || x2 >= dim_x || y < 0 || y >= dim_y) {
+        printf("Tried to draw horizontal line out of bounds! (%i->%i, %i) in (%i, %i)\n", x1, x2, y, dim_x, dim_y);
+        abort();
+      }
+
+      if (x1 <= x2) {
+        for (int i = x1; i <= x2; i++) occupancy[y][i] += val;
+      }
+      else {
+        for (int i = x1; i >= x2; i--) occupancy[y][i] += val;
+      }
+
+      return;
+    };
+
+    // INCLUSIVE
+    auto vertical_line = [&](int y1, int y2, int x, int val) {
+      if (y1 < 0 || y2 >= dim_y || y2 < 0 || y2 >= dim_y || x < 0 || x >= dim_x) {
+          printf("Tried to draw vertical line out of bounds! (%i, %i->%i) in (%i, %i)\n", x, y1, y2, dim_x, dim_y);
+          abort();
+      }
+
+      if (y1 <= y2) {
+        for (int i = y1; i <= y2; i++) occupancy[i][x] += val;
+      }
+      else {
+        for (int i = y1; i >= y2; i--) occupancy[i][x] += val;
+      }
+
+      return;
+    };
+
+
+    // To draw wires that have at least one bend
+  auto draw_wire = [&](Wire wire, int val) {
+    if (wire.start_y == wire.bend1_y) { // horizontal first
+      if (wire.start_y == wire.end_y) {
+          printf("Attempted to draw horizontal line... Please only use the draw_wire function for wires with at least one bend!");
+          abort();
+      }
+      horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, val);
+
+      int line_start = wire.bend1_y + (wire.end_y > wire.start_y ? 1 : -1);
+      vertical_line(line_start, wire.end_y, wire.bend1_x, val);
+
+      if (wire.bend1_x != wire.end_x) {
+        line_start = wire.bend1_x + (wire.end_x > wire.start_x ? 1 : -1);
+        horizontal_line(line_start, wire.end_x, wire.end_y, val);
+      }
+    }
+
+    else { assert(wire.start_x == wire.bend1_x); // vertical first
+      if (wire.start_x == wire.end_x) {
+          printf("Attempted to draw vertical line... Please only use the draw_wire function for wires with at least one bend!");
+          abort();
+      }
+      vertical_line(wire.start_y, wire.bend1_y, wire.start_x, val);
+
+      int line_start = wire.bend1_x + (wire.end_x > wire.start_x ? 1 : -1);
+      horizontal_line(line_start, wire.end_x, wire.bend1_y, val);
+
+      if (wire.bend1_y != wire.end_y) {
+        line_start = wire.bend1_y + (wire.end_y > wire.start_y ? 1 : -1);
+        vertical_line(line_start, wire.end_y, wire.end_x, val);
+      }
+    }
+  };
+
+
+  auto route_cost_help = [&](Wire wire, int bend1_x, int bend1_y) {
+    int cost = 0;
+
+    // first move is horizontal
+    if (wire.start_y == bend1_y) {
+      if (wire.start_x < wire.end_x)
+        for (int i = wire.start_x; i <= bend1_x; i++) {
+          cost += 2*(occupancy[wire.start_y][i]) + 1;
+        }
+      else
+        for (int i = wire.start_x; i >= bend1_x; i--) {
+          cost += 2*(occupancy[wire.start_y][i]) + 1;
+        }
+
+      // First bend
+      if (wire.start_y < wire.end_y)
+        for (int i = bend1_y + 1; i <= wire.end_y; i++) {
+          cost += 2*(occupancy[i][bend1_x]) + 1;
+        }
+      else
+        for (int i = bend1_y - 1; i >= wire.end_y; i--) {
+          cost += 2*(occupancy[i][bend1_x]) + 1;
+        }
+
+      if (bend1_x == wire.end_x) return cost;
+
+      // Second bend
+      if (wire.start_x < wire.end_x)
+        for (int i = bend1_x + 1; i <= wire.end_x; i++) {
+          cost += 2*(occupancy[wire.end_y][i]) + 1;
+        }
+      else
+        for (int i = bend1_x - 1; i >= wire.end_x; i--) {
+          cost += 2*(occupancy[wire.end_y][i]) + 1;
+        }
+
+      return cost;
+    }
+
+    // first move is vertical
+    else {
+      if (wire.start_y < wire.end_y)
+        for (int i = wire.start_y; i <= bend1_y; i++) {
+          cost += 2*(occupancy[i][wire.start_x]) + 1;
+        }
+      else
+        for (int i = wire.start_y; i >= bend1_y; i--) {
+          cost += 2*(occupancy[i][wire.start_x]) + 1;
+        }
+
+      // First bend
+      if (wire.start_x < wire.end_x)
+        for (int i = bend1_x + 1; i <= wire.end_x; i++) {
+          cost += 2*(occupancy[bend1_y][i]) + 1;
+        }
+      else
+        for (int i = bend1_x - 1; i >= wire.end_x; i--) {
+          cost += 2*(occupancy[bend1_y][i]) + 1;
+        }
+
+      if (bend1_y == wire.end_y) return cost;
+
+      // Second bend
+      if (wire.start_y < wire.end_y)
+        for (int i = bend1_y + 1; i <= wire.end_y; i++) {
+          cost += 2*(occupancy[i][wire.end_x]) + 1;
+        }
+      else
+        for (int i = bend1_y - 1; i >= wire.end_y; i--) {
+          cost += 2*(occupancy[i][wire.end_x]) + 1;
+        }
+
+      return cost;
+    }
+  };
+
+  auto route_cost_iteration = [&](Wire wire, int route_idx, int dx, int dy, int num_routes) {
+    int bend1_x = wire.start_x;
+    int bend1_y = wire.start_y;
+
+    // Determine minimum horizontal-first path
+    if (route_idx < abs(dx)) { // Determine minimum horizontal-first path
+      int shift = route_idx + 1;
+      int dir = dx >= 0 ? 1 : -1;
+      bend1_x += shift * dir;
+
+      return route_cost_help(wire, bend1_x, wire.start_y);
+    }
+    else if (route_idx < num_routes) { // 3) Determine minimum vertical-first path
+      int shift = route_idx - abs(dx) + 1;
+      int dir = dy >= 0 ? 1 : -1;
+      bend1_y += shift * dir;
+
+      return route_cost_help(wire, wire.start_x, bend1_y);
+    }
+
+    printf("Attempting to find cost of invalid route %i on wire with %i routes\n", route_idx, num_routes);
+    abort();
+  };
+
+
+    //asst 3 accross wires implementation
+  
+  }
 
   if (pid == ROOT) {
     const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();

@@ -388,7 +388,33 @@ int main(int argc, char *argv[]) {
   // Initialize occupancy with all wires, all processors will do this
 
 
-  //main loop
+  //main loop SA anealing
+  for (int i = 0; i < SA_iters; i++) {
+
+    //assign each processor to work on its share of wires
+    int wires_per_process;
+    int start_wire;
+    int end_wire;
+
+    for (int j = start_wire; j < end_wire; j += batch_size){
+      int end_of_batch;
+
+      //loop to route the wires in this batch
+      for (int k = j; k < end_of_batch; k++){
+
+        //find the best route for wire k using routing logic from asst3
+
+        //if the route has changed, add the updates to the batch
+
+      }
+      // Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
+    }
+
+    
+
+
+    //
+  }
 
   //note that only root should do the updates
   if (pid == ROOT) {

@@ -379,26 +379,58 @@ int main(int argc, char *argv[]) {
    * Use MPI to parallelize the algorithm.
    */
 
-  // 1) Determine wires to route
-  //
-  int processor_wires = num_wires / nproc;
-  processor_wires += pid < num_wires % nproc ? 1 : 0;
+  //this will broadcast the grid dimensions and wire data to all of the processors
+  MPI_Bcast(&dim_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+  MPI_Bcast(&dim_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+  MPI_Bcast(&num_wires, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+
+  if (pid != ROOT) {
+    wires.resize(num_wires);
+  }
+
+  //broadcast all the wire data
+  for (int i = 0; i < num_wires; i++) {
+    MPI_Bcast(&wires[i].start_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].start_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].end_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].end_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].bend1_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&wires[i].bend1_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+  }
+
+  //initialize the occcupancy matrix for all processors
+  occupancy.resize(dim_y, std::vector<int>(dim_x, 0));
+
+
+  // Initialize occupancy with all wires, all processors will do this
+
+
+  int wires_per_process;
+  int wires_per_process = num_wires / nproc;
+  wires_pre_process += pid < num_wires % nproc ? 1 : 0;
   int start_wire = (num_wires / nproc) * pid;
   start_wire += pid <= num_wires % nproc ? pid : num_wires % nproc;
+  int end_wire = start_wire + wires_per_process;
 
-  for (int iter = 0; iter < SA_iters; iter++) {
-    // 2) Perform across wires on this set of wires
-    int B = 0;
-    while (B < processor_wires) {
+  //main loop SA anealing
+  for (int i = 0; i < SA_iters; i++) {
+
+    //assign each processor to work on its share of wires
+
+    for (int j = start_wire; j < end_wire; j += batch_size){
+      int end_of_batch = start_wire + batch_size;
       int best_route_idces[batch_size];
       int my_min_costs[batch_size];
 
-      for (int i = 0; i < batch_size; i++) {
-        Wire wire = wires[start_wire + i + B]
-        my_min_cost[i] = INT_MAX;
-        best_route_idx[i] = -1;
+      //loop to route the wires in this batch
+      for (int k = j; k < end_of_batch; k++){
+        // Need to "clear out" every element of the array
+        Wire wire = wires[k];
+        my_min_cost[k - j] = INT_MAX;
+        best_route_idx[k - j] = -1;
 
-        if (i + B >= processor_wires) continue;
+        // find the best route for wire k using routing logic from asst3
+        if (k - start_wire >= processor_wires) continue;
 
         int dx = wire.end_x - wire.start_x;
         int dy = wire.end_y - wire.start_y;
@@ -411,11 +443,11 @@ int main(int argc, char *argv[]) {
         }
 
         if (dx == 0) {
-            best_route_idx = num_routes;
+            best_route_idces[k - j] = num_routes;
             horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
         }
         else if (dy == 0) {
-            best_route_idx = num_routes + 1;
+            best_route_idces[k - j] = num_routes + 1;
             vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
         }
         else {
@@ -450,20 +482,20 @@ int main(int argc, char *argv[]) {
             }
           }
         }
+        //TODO: if the route has changed, add the updates to the batch
       }
-
-      // TODO: How does ring hopping work with more than 3 processors?
-      // 3) Send updates (Ring Hop 0)
+      // TODO: Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
       int send_target = pid + 1 % nproc;
       MPI_Isend(&(best_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
 
-      // 4) Receive updates (Ring Hop 1)
+      int recv_route_idces[batch_size];
       int recv_partner = (pid + (nproc - 1)) % nproc;
-    }
+      MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[1]);
 
+    }
   }
 
-
+  //note that only root should do the updates
   if (pid == ROOT) {
     const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();
     std::cout << "Computation time (sec): " << std::fixed << std::setprecision(10) << compute_time << '\n';

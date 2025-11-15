@@ -1,3 +1,4 @@
+//correctness passes but scaling issues now
 #include "mpi.h"
 #include <algorithm>
 #include <iostream>
@@ -455,10 +456,16 @@ int main(int argc, char *argv[]) {
         if (dx == 0) {
             best_route_idces[k - j] = num_routes;
             horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+            //added -> was missing wire updates
+            wires[k].bend1_x = wire.start_x;
+            wires[k].bend1_y = wire.start_y;
         }
         else if (dy == 0) {
             best_route_idces[k - j] = num_routes + 1;
             vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+            //added -> was missing wire updates
+            wires[k].bend1_x = wire.start_x;
+            wires[k].bend1_y = wire.start_y;
         }
         else {
           for (int route_idx = 0; route_idx < num_routes; route_idx++) {
@@ -494,7 +501,12 @@ int main(int argc, char *argv[]) {
         }
         //if the route has changed, add the updates to the batch
         //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
+        
+        //added
+        wires[k].bend1_x = wire.bend1_x;
+        wires[k].bend1_y = wire.bend1_y;
         draw_wire(wire, 1);
+
         //printf("DEBUG: Success for processor %i!\n", pid);
       }
 
@@ -513,14 +525,17 @@ int main(int argc, char *argv[]) {
           MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
         }
         else {
-          MPI_Isend(&(send_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
-          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
+          //up here changed recv_partner with send_target
+          MPI_Isend(&(send_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
+          //changed reqs[0] to reqs[1]
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
         }
         MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
 
         // the wires I'm about to process, where did they come from?
         // the "source" should essentiall travel backwards (so pid - 1 -> pid - 2 -> ...)
-        int wire_origin_pid = recv_partner + (nproc - hop) % nproc;
+        // int wire_origin_pid = recv_partner + (nproc - hop) % nproc;
+        int wire_origin_pid = (pid - hop - 1 + nproc) % nproc; //CHANGED
         assert(wire_origin_pid >= 0);
 
         int recv_wires = num_wires / nproc;
@@ -542,11 +557,20 @@ int main(int argc, char *argv[]) {
 
           // If past first iteration:
           if (iter > 0) {
-            if (all_routes[wire_num] != recv_route_idces[w]) { // new!
-              assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y);
-              //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
-              draw_wire(wire, -1);
-              //printf("DEBUG: Success for processor %i!\n", pid);
+            // if (all_routes[wire_num] != recv_route_idces[w]) { // new!
+            //   assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y);
+            //   //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
+            //   draw_wire(wire, -1);
+            //   //printf("DEBUG: Success for processor %i!\n", pid);
+
+            if (all_routes[wire_num] != recv_route_idces[w]) {
+              if (dx != 0 && dy != 0) {
+                  draw_wire(wire, -1);
+              } else if (dx == 0) {
+                  vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
+              } else if (dy == 0) {
+                  horizontal_line(wire.start_x, wire.end_x, wire.start_y, -1);
+              }
 
               if (recv_route_idces[w] < abs(dx)) {
                 wire.bend1_x = wire.start_x + ((recv_route_idces[w] + 1) * (dx >= 0 ? 1 : -1));
@@ -557,7 +581,18 @@ int main(int argc, char *argv[]) {
                 wire.bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
               }
               //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
-              draw_wire(wire, 1);
+              //added
+              wires[wire_num].bend1_x = wire.bend1_x;
+              wires[wire_num].bend1_y = wire.bend1_y;
+              // draw_wire(wire, 1);
+              //changed this
+              if (dx != 0 && dy != 0) {
+                  draw_wire(wire, 1);
+              } else if (dy == 0) {
+                  horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+              } else if (dx == 0) {
+                  vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+              }
               //printf("DEBUG: Success for processor %i!\n", pid);
               all_routes[wire_num] = recv_route_idces[w];
             }
@@ -567,6 +602,7 @@ int main(int argc, char *argv[]) {
             if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
             else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
             else draw_wire(wire, 1);
+            all_routes[wire_num] = recv_route_idces[w];
             //printf("DEBUG: Success for processor %i!\n", pid);
           }
         }

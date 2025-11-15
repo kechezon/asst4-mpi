@@ -402,8 +402,7 @@ int main(int argc, char *argv[]) {
   occupancy.resize(dim_y, std::vector<int>(dim_x, 0));
 
 
-  // Initialize occupancy with all wires, all processors will do this
-
+  // Initialize occupancy with all wires, all processors will do this (Why?)
 
   int wires_per_process;
   int wires_per_process = num_wires / nproc;
@@ -412,13 +411,18 @@ int main(int argc, char *argv[]) {
   start_wire += pid <= num_wires % nproc ? pid : num_wires % nproc;
   int end_wire = start_wire + wires_per_process;
 
+  // TO BE UPDATED
+  // Will allow us to detect changes
+  std::vector<int> all_routes = std::vector<int>(num_wires, -1);
+
   //main loop SA anealing
   for (int i = 0; i < SA_iters; i++) {
 
     //assign each processor to work on its share of wires
 
+    int batch = 0;
     for (int j = start_wire; j < end_wire; j += batch_size){
-      int end_of_batch = start_wire + batch_size;
+      int end_of_batch = j + batch_size;
       int best_route_idces[batch_size];
       int my_min_costs[batch_size];
 
@@ -426,11 +430,11 @@ int main(int argc, char *argv[]) {
       for (int k = j; k < end_of_batch; k++){
         // Need to "clear out" every element of the array
         Wire wire = wires[k];
-        my_min_cost[k - j] = INT_MAX;
+        my_min_cost[k - j] = INT_MAX; // change to route's current cost
         best_route_idx[k - j] = -1;
 
         // find the best route for wire k using routing logic from asst3
-        if (k - start_wire >= processor_wires) continue;
+        if (k >= end_wire) continue;
 
         int dx = wire.end_x - wire.start_x;
         int dy = wire.end_y - wire.start_y;
@@ -456,7 +460,7 @@ int main(int argc, char *argv[]) {
             int my_route_cost = route_cost_iteration(wire, route_idx, dx, dy, num_routes);
 
             if (my_route_cost < my_min_cost) {
-                best_route_idces[i] = route_idx; // remember it!
+                best_route_idces[k - j] = route_idx; // remember it!
                 my_min_cost[i] = my_route_cost;
             }
           }
@@ -483,16 +487,82 @@ int main(int argc, char *argv[]) {
           }
         }
         //TODO: if the route has changed, add the updates to the batch
+        draw_wire(wire, 1);
       }
-      // TODO: Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
+
+      // Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
+      // .clear() is not needed, since the batch resets at the top of the middle loop
       int send_target = pid + 1 % nproc;
-      MPI_Isend(&(best_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
-
-      int recv_route_idces[batch_size];
       int recv_partner = (pid + (nproc - 1)) % nproc;
-      MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[1]);
+      int recv_route_idces[batch_size];
 
+
+      // Take the recv_route_idces, determine which wires they belong to, and update
+      auto hop_helper = [&](int hop) {
+        if (hop == 0) {
+          MPI_Isend(&(best_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[1]);
+        }
+        else {
+          MPI_Isend(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[0]);
+          MPI_Barrier(MPI_COMM_WORLD); // TODO: This may cause some issues if sending doesn't work
+                                       //       on the "buffer" system I think it does...
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[0]);
+        }
+
+        // the wires I'm about to process, where did they come from?
+        // the "source" should essentiall travel backwards (so pid - 1 -> pid - 2 -> ...)
+        int wire_origin_pid = recv_partner + (nproc - hop) % nproc;
+        assert(wire_origin_pid >= 0);
+
+        int recv_wires = num_wires / nproc;
+        recv_wires += wire_origin_pid < num_wires % nproc ? 1 : 0;
+        int recv_start = (num_wires / nproc) * wire_origin_pid;
+        recv_start += wire_origin_pid <= num_wires % nproc ? wire_origin_pid : num_wires % nproc;
+        int recv_end = recv_start + recv_wires;
+
+
+        for (int w = 0; w < recv_wires; w++) {
+          int wire_num = recv_start + w + (batch * batch_size);
+          Wire wire = wires[wire_num];
+          int dx = wire.end_x - wire.start_x;
+          int dy = wire.end_y - wire.start_y;
+          int num_routes = abs(dx) + abs(dy);
+
+          // If past first iteration:
+          if (i > 0) {
+            if (all_routes[wire_num] != recv_route_idces[w]) { // new!
+              assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y);
+              draw_wire(wire, -1);
+
+              if (recv_route_idces[w] < abs(dx)) {
+                wire.bend1_x = wire.start_x + ((recv_route_idces[w] + 1) * (dx >= 0 ? 1 : -1));
+                wire.bend1_y = wire.start_y;
+              }
+              else if (recv_route_idces[w] < num_routes) {
+                wire.bend1_x = wire.start_x;
+                wire_bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
+              }
+              draw_wire(wire, 1);
+              all_routes[wire_num] = recv_route_idces[w];
+            }
+          }
+          else {
+            if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+            else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+            else draw_wire(wire, 1);
+          }
+        }
+      }
+
+      for (int hop = 0; hop < nproc - 1; hop++) {
+        hop_helper(hop);
+      }
+
+      // end batch
+      batch++;
     }
+    // end iteration
   }
 
   //note that only root should do the updates

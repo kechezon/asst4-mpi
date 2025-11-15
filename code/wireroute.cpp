@@ -6,6 +6,9 @@
 #include <chrono>
 #include <string>
 #include <vector>
+#include <cassert>
+#include <climits>
+#include <iostream>
 
 #include <mpi.h>
 
@@ -90,7 +93,7 @@ int main(int argc, char *argv[]) {
   int pid;
   int nproc;
   MPI_Status stats[4];
-  MPI_Request req[2];
+  MPI_Request reqs[2];
 
   // Initialize MPI
   MPI_Init(&argc, &argv);
@@ -404,9 +407,8 @@ int main(int argc, char *argv[]) {
 
   // Initialize occupancy with all wires, all processors will do this (Why?)
 
-  int wires_per_process;
   int wires_per_process = num_wires / nproc;
-  wires_pre_process += pid < num_wires % nproc ? 1 : 0;
+  wires_per_process += pid < num_wires % nproc ? 1 : 0;
   int start_wire = (num_wires / nproc) * pid;
   start_wire += pid <= num_wires % nproc ? pid : num_wires % nproc;
   int end_wire = start_wire + wires_per_process;
@@ -416,7 +418,7 @@ int main(int argc, char *argv[]) {
   std::vector<int> all_routes = std::vector<int>(num_wires, -1);
 
   //main loop SA anealing
-  for (int i = 0; i < SA_iters; i++) {
+  for (int iter = 0; iter < SA_iters; iter++) {
 
     //assign each processor to work on its share of wires
 
@@ -430,8 +432,8 @@ int main(int argc, char *argv[]) {
       for (int k = j; k < end_of_batch; k++){
         // Need to "clear out" every element of the array
         Wire wire = wires[k];
-        my_min_cost[k - j] = INT_MAX; // change to route's current cost
-        best_route_idx[k - j] = -1;
+        my_min_costs[k - j] = INT_MAX; // change to route's current cost
+        best_route_idces[k - j] = -1;
 
         // find the best route for wire k using routing logic from asst3
         if (k >= end_wire) continue;
@@ -459,9 +461,9 @@ int main(int argc, char *argv[]) {
             // determine new route for wire using another loop
             int my_route_cost = route_cost_iteration(wire, route_idx, dx, dy, num_routes);
 
-            if (my_route_cost < my_min_cost) {
+            if (my_route_cost < my_min_costs[k-j]) {
                 best_route_idces[k - j] = route_idx; // remember it!
-                my_min_cost[i] = my_route_cost;
+                my_min_costs[k-j] = my_route_cost;
             }
           }
 
@@ -476,13 +478,13 @@ int main(int argc, char *argv[]) {
             }
           }
           else {
-            if (best_route_idces[i] < abs(dx)) {
-              wire.bend1_x = wire.start_x + ((best_route_idces[i] + 1) * (dx >= 0 ? 1 : -1));
+            if (best_route_idces[k-j] < abs(dx)) {
+              wire.bend1_x = wire.start_x + ((best_route_idces[k-j] + 1) * (dx >= 0 ? 1 : -1));
               wire.bend1_y = wire.start_y;
             }
-            else if (best_route_idces[i] < num_routes) {
+            else if (best_route_idces[k-j] < num_routes) {
               wire.bend1_x = wire.start_x;
-              wire.bend1_y = wire.start_y + ((best_route_idces[i] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
+              wire.bend1_y = wire.start_y + ((best_route_idces[k-j] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
             }
           }
         }
@@ -501,13 +503,13 @@ int main(int argc, char *argv[]) {
       auto hop_helper = [&](int hop) {
         if (hop == 0) {
           MPI_Isend(&(best_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
-          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[1]);
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
         }
         else {
-          MPI_Isend(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[0]);
+          MPI_Isend(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
           MPI_Barrier(MPI_COMM_WORLD); // TODO: This may cause some issues if sending doesn't work
                                        //       on the "buffer" system I think it does...
-          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_target, 1, MPI_COMM_WORLD, &reqs[0]);
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
         }
 
         // the wires I'm about to process, where did they come from?
@@ -530,7 +532,7 @@ int main(int argc, char *argv[]) {
           int num_routes = abs(dx) + abs(dy);
 
           // If past first iteration:
-          if (i > 0) {
+          if (iter > 0) {
             if (all_routes[wire_num] != recv_route_idces[w]) { // new!
               assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y);
               draw_wire(wire, -1);
@@ -541,7 +543,7 @@ int main(int argc, char *argv[]) {
               }
               else if (recv_route_idces[w] < num_routes) {
                 wire.bend1_x = wire.start_x;
-                wire_bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
+                wire.bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
               }
               draw_wire(wire, 1);
               all_routes[wire_num] = recv_route_idces[w];
@@ -553,7 +555,7 @@ int main(int argc, char *argv[]) {
             else draw_wire(wire, 1);
           }
         }
-      }
+      };
 
       for (int hop = 0; hop < nproc - 1; hop++) {
         hop_helper(hop);

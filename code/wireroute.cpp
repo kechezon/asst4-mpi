@@ -1,3 +1,4 @@
+#include "mpi.h"
 #include <algorithm>
 #include <iostream>
 #include <unistd.h>
@@ -9,8 +10,6 @@
 #include <cassert>
 #include <climits>
 #include <iostream>
-
-#include <mpi.h>
 
 #include "wireroute.h"
 #define ROOT 0
@@ -166,7 +165,7 @@ int main(int argc, char *argv[]) {
   // INCLUSIVE
   auto horizontal_line = [&](int x1, int x2, int y, int val) {
     if (x1 < 0 || x2 >= dim_x || x2 < 0 || x2 >= dim_x || y < 0 || y >= dim_y) {
-      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i) in (%i, %i)\n", x1, x2, y, dim_x, dim_y);
+      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i) in (%i, %i) [Called from Line %i]\n", x1, x2, y, dim_x, dim_y);
       abort();
     }
 
@@ -376,7 +375,6 @@ int main(int argc, char *argv[]) {
   const auto compute_start = std::chrono::steady_clock::now();
 
   /**
-   * (TODO)
    * Implement the wire routing algorithm here
    * Feel free to structure the algorithm into different functions
    * Use MPI to parallelize the algorithm.
@@ -393,7 +391,7 @@ int main(int argc, char *argv[]) {
 
   //broadcast all the wire data
   for (int i = 0; i < num_wires; i++) {
-    MPI_Bcast(&wires[i].start_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&(wires[i].start_x), 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&wires[i].start_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&wires[i].end_x, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&wires[i].end_y, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
@@ -423,7 +421,11 @@ int main(int argc, char *argv[]) {
     //assign each processor to work on its share of wires
 
     int batch = 0;
-    for (int j = start_wire; j < end_wire; j += batch_size){
+    for (int j = start_wire; j < end_wire; j += batch_size) {
+      /*if (pid == ROOT) {
+        std::cout << num_wires << ": [" << j << "," << std::min((j + batch_size), end_wire) << ")" << std::endl;
+      }*/
+
       int end_of_batch = j + batch_size;
       int best_route_idces[batch_size];
       int my_min_costs[batch_size];
@@ -431,21 +433,23 @@ int main(int argc, char *argv[]) {
       //loop to route the wires in this batch
       for (int k = j; k < end_of_batch; k++){
         // Need to "clear out" every element of the array
-        Wire wire = wires[k];
         my_min_costs[k - j] = INT_MAX; // change to route's current cost
         best_route_idces[k - j] = -1;
 
         // find the best route for wire k using routing logic from asst3
         if (k >= end_wire) continue;
+        Wire wire = wires[k];
 
         int dx = wire.end_x - wire.start_x;
         int dy = wire.end_y - wire.start_y;
         int num_routes = abs(dx) + abs(dy);
 
         if (iter > 0) {
+            //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
             if (dx != 0 && dy != 0) draw_wire(wire, -1);
             else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
             else if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, -1);
+            //printf("DEBUG: Success for processor %i!\n", pid);
         }
 
         if (dx == 0) {
@@ -488,14 +492,17 @@ int main(int argc, char *argv[]) {
             }
           }
         }
-        //TODO: if the route has changed, add the updates to the batch
+        //if the route has changed, add the updates to the batch
+        //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
         draw_wire(wire, 1);
+        //printf("DEBUG: Success for processor %i!\n", pid);
       }
 
       // Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
       // .clear() is not needed, since the batch resets at the top of the middle loop
-      int send_target = pid + 1 % nproc;
+      int send_target = (pid + 1) % nproc;
       int recv_partner = (pid + (nproc - 1)) % nproc;
+      int send_route_idces[batch_size];
       int recv_route_idces[batch_size];
 
 
@@ -506,11 +513,10 @@ int main(int argc, char *argv[]) {
           MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
         }
         else {
-          MPI_Isend(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
-          MPI_Barrier(MPI_COMM_WORLD); // TODO: This may cause some issues if sending doesn't work
-                                       //       on the "buffer" system I think it does...
+          MPI_Isend(&(send_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
           MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[0]);
         }
+        MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
 
         // the wires I'm about to process, where did they come from?
         // the "source" should essentiall travel backwards (so pid - 1 -> pid - 2 -> ...)
@@ -524,8 +530,11 @@ int main(int argc, char *argv[]) {
         int recv_end = recv_start + recv_wires;
 
 
-        for (int w = 0; w < recv_wires; w++) {
+        //for (int w = 0; w < recv_wires; w++) {
+        for (int w = 0; w < batch_size; w++) {
           int wire_num = recv_start + w + (batch * batch_size);
+          if (wire_num >= num_wires) continue;
+
           Wire wire = wires[wire_num];
           int dx = wire.end_x - wire.start_x;
           int dy = wire.end_y - wire.start_y;
@@ -535,7 +544,9 @@ int main(int argc, char *argv[]) {
           if (iter > 0) {
             if (all_routes[wire_num] != recv_route_idces[w]) { // new!
               assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y);
+              //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
               draw_wire(wire, -1);
+              //printf("DEBUG: Success for processor %i!\n", pid);
 
               if (recv_route_idces[w] < abs(dx)) {
                 wire.bend1_x = wire.start_x + ((recv_route_idces[w] + 1) * (dx >= 0 ? 1 : -1));
@@ -545,20 +556,29 @@ int main(int argc, char *argv[]) {
                 wire.bend1_x = wire.start_x;
                 wire.bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
               }
+              //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
               draw_wire(wire, 1);
+              //printf("DEBUG: Success for processor %i!\n", pid);
               all_routes[wire_num] = recv_route_idces[w];
             }
           }
           else {
+            //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
             if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
             else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
             else draw_wire(wire, 1);
+            //printf("DEBUG: Success for processor %i!\n", pid);
           }
         }
       };
 
       for (int hop = 0; hop < nproc - 1; hop++) {
         hop_helper(hop);
+
+        // next time, send what I just received
+        for (int b = 0; b < batch_size; b++) {
+          send_route_idces[b] = recv_route_idces[b];
+        }
       }
 
       // end batch

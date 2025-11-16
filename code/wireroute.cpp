@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
   // INCLUSIVE
   auto horizontal_line = [&](int x1, int x2, int y, int val) {
     if (x1 < 0 || x2 >= dim_x || x2 < 0 || x2 >= dim_x || y < 0 || y >= dim_y) {
-      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i) in (%i, %i) [Called from Line %i]\n", x1, x2, y, dim_x, dim_y);
+      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i) in (%i, %i) [Called from Line %i]\n", x1, x2, y, dim_x, dim_y, __LINE__);
       abort();
     }
 
@@ -183,7 +183,7 @@ int main(int argc, char *argv[]) {
   // INCLUSIVE
   auto vertical_line = [&](int y1, int y2, int x, int val) {
     if (y1 < 0 || y2 >= dim_y || y2 < 0 || y2 >= dim_y || x < 0 || x >= dim_x) {
-        printf("Tried to draw vertical line out of bounds! (%i, %i->%i) in (%i, %i)\n", x, y1, y2, dim_x, dim_y);
+        printf("Tried to draw vertical line out of bounds! (%i, %i->%i) in (%i, %i) [Called from Line %i]\n", x, y1, y2, dim_x, dim_y, __LINE__);
         abort();
     }
 
@@ -202,7 +202,7 @@ int main(int argc, char *argv[]) {
   auto draw_wire = [&](Wire wire, int val) {
     if (wire.start_y == wire.bend1_y) { // horizontal first
       if (wire.start_y == wire.end_y) {
-          printf("Attempted to draw horizontal line... Please only use the draw_wire function for wires with at least one bend!");
+          printf("Attempted to draw horizontal line... Please only use the draw_wire function for wires with at least one bend! [Called from Line %i]\n", __LINE__);
           abort();
       }
       horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, val);
@@ -218,7 +218,7 @@ int main(int argc, char *argv[]) {
 
     else { assert(wire.start_x == wire.bend1_x); // vertical first
       if (wire.start_x == wire.end_x) {
-          printf("Attempted to draw vertical line... Please only use the draw_wire function for wires with at least one bend!");
+          printf("Attempted to draw vertical line... Please only use the draw_wire function for wires with at least one bend! [Called from Line %i]\n", __LINE__);
           abort();
       }
       vertical_line(wire.start_y, wire.bend1_y, wire.start_x, val);
@@ -447,25 +447,28 @@ int main(int argc, char *argv[]) {
 
         if (iter > 0) {
             //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
-            if (dx != 0 && dy != 0) draw_wire(wire, -1);
-            else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
-            else if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, -1);
+            if (dx != 0 && dy != 0) {
+                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 568");
+                draw_wire(wire, -1);
+            }
+            /*else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
+            else if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, -1);*/
             //printf("DEBUG: Success for processor %i!\n", pid);
         }
 
         if (dx == 0) {
             best_route_idces[k - j] = num_routes;
-            horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
             //added -> was missing wire updates
             wires[k].bend1_x = wire.start_x;
             wires[k].bend1_y = wire.start_y;
+            if (iter == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
         }
         else if (dy == 0) {
             best_route_idces[k - j] = num_routes + 1;
-            vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
             //added -> was missing wire updates
             wires[k].bend1_x = wire.start_x;
             wires[k].bend1_y = wire.start_y;
+            if (iter == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
         }
         else {
           for (int route_idx = 0; route_idx < num_routes; route_idx++) {
@@ -501,10 +504,11 @@ int main(int argc, char *argv[]) {
         }
         //if the route has changed, add the updates to the batch
         //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
-        
+
         //added
         wires[k].bend1_x = wire.bend1_x;
         wires[k].bend1_y = wire.bend1_y;
+        assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 568");
         draw_wire(wire, 1);
 
         //printf("DEBUG: Success for processor %i!\n", pid);
@@ -530,7 +534,7 @@ int main(int argc, char *argv[]) {
           //changed reqs[0] to reqs[1]
           MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
         }
-        MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
+        //MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
 
         // the wires I'm about to process, where did they come from?
         // the "source" should essentiall travel backwards (so pid - 1 -> pid - 2 -> ...)
@@ -544,11 +548,11 @@ int main(int argc, char *argv[]) {
         recv_start += wire_origin_pid <= num_wires % nproc ? wire_origin_pid : num_wires % nproc;
         int recv_end = recv_start + recv_wires;
 
-
         //for (int w = 0; w < recv_wires; w++) {
         for (int w = 0; w < batch_size; w++) {
           int wire_num = recv_start + w + (batch * batch_size);
-          if (wire_num >= num_wires) continue;
+          //if (wire_num >= num_wires) continue;
+          if (wire_num >= recv_end) continue;
 
           Wire wire = wires[wire_num];
           int dx = wire.end_x - wire.start_x;
@@ -565,6 +569,7 @@ int main(int argc, char *argv[]) {
 
             if (all_routes[wire_num] != recv_route_idces[w]) {
               if (dx != 0 && dy != 0) {
+                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 568");
                   draw_wire(wire, -1);
               } else if (dx == 0) {
                   vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
@@ -582,11 +587,12 @@ int main(int argc, char *argv[]) {
               }
               //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
               //added
-              wires[wire_num].bend1_x = wire.bend1_x;
+              //wires[wire_num].bend1_x = wire.bend1_x;
               wires[wire_num].bend1_y = wire.bend1_y;
               // draw_wire(wire, 1);
               //changed this
               if (dx != 0 && dy != 0) {
+                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 591");
                   draw_wire(wire, 1);
               } else if (dy == 0) {
                   horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
@@ -601,7 +607,10 @@ int main(int argc, char *argv[]) {
             //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
             if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
             else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
-            else draw_wire(wire, 1);
+            else {
+                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 591");
+                draw_wire(wire, 1);
+            }
             all_routes[wire_num] = recv_route_idces[w];
             //printf("DEBUG: Success for processor %i!\n", pid);
           }

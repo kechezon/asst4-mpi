@@ -448,7 +448,7 @@ int main(int argc, char *argv[]) {
         if (iter > 0) {
             //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
             if (dx != 0 && dy != 0) {
-                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 568");
+                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 451");
                 draw_wire(wire, -1);
             }
             /*else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
@@ -501,6 +501,8 @@ int main(int argc, char *argv[]) {
               wire.bend1_y = wire.start_y + ((best_route_idces[k-j] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
             }
           }
+          assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 511");
+          draw_wire(wire, 1);
         }
         //if the route has changed, add the updates to the batch
         //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
@@ -508,8 +510,6 @@ int main(int argc, char *argv[]) {
         //added
         wires[k].bend1_x = wire.bend1_x;
         wires[k].bend1_y = wire.bend1_y;
-        assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 568");
-        draw_wire(wire, 1);
 
         //printf("DEBUG: Success for processor %i!\n", pid);
       }
@@ -534,6 +534,7 @@ int main(int argc, char *argv[]) {
           //changed reqs[0] to reqs[1]
           MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
         }
+
         //MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
 
         // the wires I'm about to process, where did they come from?
@@ -569,7 +570,7 @@ int main(int argc, char *argv[]) {
 
             if (all_routes[wire_num] != recv_route_idces[w]) {
               if (dx != 0 && dy != 0) {
-                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 568");
+                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 572");
                   draw_wire(wire, -1);
               } else if (dx == 0) {
                   vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
@@ -588,11 +589,11 @@ int main(int argc, char *argv[]) {
               //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
               //added
               //wires[wire_num].bend1_x = wire.bend1_x;
-              wires[wire_num].bend1_y = wire.bend1_y;
+              //wires[wire_num].bend1_y = wire.bend1_y;
               // draw_wire(wire, 1);
               //changed this
               if (dx != 0 && dy != 0) {
-                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 591");
+                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 595");
                   draw_wire(wire, 1);
               } else if (dy == 0) {
                   horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
@@ -608,8 +609,8 @@ int main(int argc, char *argv[]) {
             if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
             else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
             else {
-                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 591");
-                draw_wire(wire, 1);
+              assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 611");
+              draw_wire(wire, 1);
             }
             all_routes[wire_num] = recv_route_idces[w];
             //printf("DEBUG: Success for processor %i!\n", pid);
@@ -619,6 +620,7 @@ int main(int argc, char *argv[]) {
 
       for (int hop = 0; hop < nproc - 1; hop++) {
         hop_helper(hop);
+        //MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
 
         // next time, send what I just received
         for (int b = 0; b < batch_size; b++) {

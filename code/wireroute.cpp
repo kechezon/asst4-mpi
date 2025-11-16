@@ -476,19 +476,23 @@ int main(int argc, char *argv[]) {
             int my_route_cost = route_cost_iteration(wire, route_idx, dx, dy, num_routes);
 
             if (my_route_cost < my_min_costs[k-j]) {
-                best_route_idces[k - j] = route_idx; // remember it!
-                my_min_costs[k-j] = my_route_cost;
+              best_route_idces[k - j] = route_idx; // remember it!
+              my_min_costs[k-j] = my_route_cost;
             }
           }
 
           if (rand() / (float)(RAND_MAX) <= SA_prob) {
             if (rand() % 2 == 1) { // horizontal first
+              int r = rand();
               wire.bend1_y = wire.start_y;
-              wire.bend1_x = wire.start_x + ((rand() % (abs(wire.end_x - wire.start_x) + 1)) * (dx > 0 ? 1 : -1));
+              wire.bend1_x = wire.start_x + (r % abs(dx) + 1) * (dx > 0 ? 1 : -1);
+              best_route_idces[k-j] = r % abs(dx);
             }
             else { // vertical first
+              int r = rand();
               wire.bend1_x = wire.start_x;
-              wire.bend1_y = wire.start_y + ((rand() % (abs(wire.end_y - wire.start_y) + 1)) * (dy > 0 ? 1 : -1));
+              wire.bend1_y = wire.start_y + (r % abs(dy) + 1) * (dy > 0 ? 1 : -1);
+              best_route_idces[k-j] = (r % abs(dy)) + abs(dx);
             }
           }
           else {

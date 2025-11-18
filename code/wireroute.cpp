@@ -423,6 +423,7 @@ int main(int argc, char *argv[]) {
 
     int batch = 0;
     for (int j = start_wire; j < end_wire; j += batch_size) {
+      const auto batch_compute_start = std::chrono::steady_clock::now();
       /*if (pid == ROOT) {
         std::cout << num_wires << ": [" << j << "," << std::min((j + batch_size), end_wire) << ")" << std::endl;
       }*/
@@ -449,6 +450,8 @@ int main(int argc, char *argv[]) {
             //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
             if (dx != 0 && dy != 0) {
                 assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 451");
+                assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+                assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
                 draw_wire(wire, -1);
             }
             /*else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
@@ -480,6 +483,7 @@ int main(int argc, char *argv[]) {
               my_min_costs[k-j] = my_route_cost;
             }
           }
+          assert(best_route_idces[k-j] > -1);
 
           if (rand() / (float)(RAND_MAX) <= SA_prob) {
             if (rand() % 2 == 1) { // horizontal first
@@ -506,6 +510,8 @@ int main(int argc, char *argv[]) {
             }
           }
           assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 511");
+          assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+          assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
           draw_wire(wire, 1);
         }
         //if the route has changed, add the updates to the batch
@@ -518,64 +524,48 @@ int main(int argc, char *argv[]) {
         //printf("DEBUG: Success for processor %i!\n", pid);
       }
 
-      // Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
-      // .clear() is not needed, since the batch resets at the top of the middle loop
-      int send_target = (pid + 1) % nproc;
-      int recv_partner = (pid + (nproc - 1)) % nproc;
-      int send_route_idces[batch_size];
-      int recv_route_idces[batch_size];
+      /*if (pid == ROOT) {
+        const double batch_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - batch_compute_start).count();
+        std::cout << "Iteration " << iter << ", Batch " << batch << " Compute time: " << std::fixed << std::setprecision(10) << batch_time << '\n';
+      }*/
 
+      //const auto batch_propagate_start = std::chrono::steady_clock::now();
 
-      // Take the recv_route_idces, determine which wires they belong to, and update
-      auto hop_helper = [&](int hop) {
-        if (hop == 0) {
-          MPI_Isend(&(best_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
-          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
-        }
-        else {
-          //up here changed recv_partner with send_target
-          MPI_Isend(&(send_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
-          //changed reqs[0] to reqs[1]
-          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
-        }
+      // Butterfly approach
+      /*int send_route_idces[batch_size * nproc];
+      int recv_route_idces[batch_size * nproc];
 
-        //MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
-
-        // the wires I'm about to process, where did they come from?
-        // the "source" should essentiall travel backwards (so pid - 1 -> pid - 2 -> ...)
-        // int wire_origin_pid = recv_partner + (nproc - hop) % nproc;
-        int wire_origin_pid = (pid - hop - 1 + nproc) % nproc; //CHANGED
-        assert(wire_origin_pid >= 0);
-
+      // handles receiving propagations
+      auto propagate_helper = [&](int source_pid) {
+        // determine the start of this wire's batch
         int recv_wires = num_wires / nproc;
-        recv_wires += wire_origin_pid < num_wires % nproc ? 1 : 0;
-        int recv_start = (num_wires / nproc) * wire_origin_pid;
-        recv_start += wire_origin_pid <= num_wires % nproc ? wire_origin_pid : num_wires % nproc;
+        recv_wires += source_pid < num_wires % nproc ? 1 : 0;
+        int recv_start = (num_wires / nproc) * source_pid;
+        recv_start += source_pid < num_wires % nproc ? source_pid : num_wires % nproc;
         int recv_end = recv_start + recv_wires;
 
-        //for (int w = 0; w < recv_wires; w++) {
+        // update wires with corresponding bends, and draw in the occupancy matrix
         for (int w = 0; w < batch_size; w++) {
           int wire_num = recv_start + w + (batch * batch_size);
-          //if (wire_num >= num_wires) continue;
-          if (wire_num >= recv_end) continue;
+          if (wire_num >= recv_end) break;
 
           Wire wire = wires[wire_num];
           int dx = wire.end_x - wire.start_x;
           int dy = wire.end_y - wire.start_y;
           int num_routes = abs(dx) + abs(dy);
 
+          assert(recv_route_idces[w] > -1);
+
           // If past first iteration:
           if (iter > 0) {
-            // if (all_routes[wire_num] != recv_route_idces[w]) { // new!
-            //   assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y);
-            //   //printf("DEBUG: Processor %i attempting to draw (-1) at %i...\n", pid, __LINE__);
-            //   draw_wire(wire, -1);
-            //   //printf("DEBUG: Success for processor %i!\n", pid);
-
-            if (all_routes[wire_num] != recv_route_idces[w]) {
+            if (all_routes[wire_num] != recv_route_idces[w]) { // NEW!
               if (dx != 0 && dy != 0) {
-                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 572");
-                  draw_wire(wire, -1);
+                assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+                assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
+                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 572");
+                //printf("%i: Recv Idx = %i [Line %i]\n", pid, recv_route_idces[w], __LINE__);
+
+                draw_wire(wire, -1);
               } else if (dx == 0) {
                   vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
               } else if (dy == 0) {
@@ -590,14 +580,13 @@ int main(int argc, char *argv[]) {
                 wire.bend1_x = wire.start_x;
                 wire.bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
               }
-              //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
-              //added
-              //wires[wire_num].bend1_x = wire.bend1_x;
-              //wires[wire_num].bend1_y = wire.bend1_y;
-              // draw_wire(wire, 1);
-              //changed this
+
               if (dx != 0 && dy != 0) {
-                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 595");
+                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 595");
+                assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+                assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
+                //printf("%i: Recv Idx = %i [Line %i]\n", pid, recv_route_idces[w], __LINE__);
+
                   draw_wire(wire, 1);
               } else if (dy == 0) {
                   horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
@@ -609,11 +598,187 @@ int main(int argc, char *argv[]) {
             }
           }
           else {
-            //printf("DEBUG: Processor %i attempting to draw (1) at %i...\n", pid, __LINE__);
+            if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+              else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+              else {
+                assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 611");
+                assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+                assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
+                //printf("%i: Recv Idx = %i [Line %i]\n", pid, recv_route_idces[w], __LINE__);
+
+                draw_wire(wire, 1);
+              }
+              all_routes[wire_num] = recv_route_idces[w];
+              //printf("DEBUG: Success for processor %i!\n", pid);
+          }
+        }
+      };
+
+      for (int b = 0; b < batch_size; b++) {
+        send_route_idces[b] = best_route_idces[b];
+      }
+
+      // (1 << level) lets us determine if level < log(nprocs)
+      for (int level = 0; (1 << level) < nproc; level++) {
+          int two_pow_level = 1 << level;
+          int partner = pid ^ two_pow_level;// either +/- 1, 2, 4, 8...
+
+          if (partner >= nproc) partner = nproc - 1;
+          if (partner == pid) {
+            // simply copy what's already in my send buffer
+            for (int b = 0; b < batch_size * two_pow_level; b++) {
+              recv_route_idces[b] = send_route_idces[b];
+            }
+          }
+          else {
+            int temp_recv[batch_size * two_pow_level];
+
+            MPI_Isend(&(send_route_idces[0]), batch_size * two_pow_level, MPI_INT, partner, 1, MPI_COMM_WORLD, &reqs[0]);
+            MPI_Irecv(&(temp_recv[0]), batch_size * two_pow_level, MPI_INT, partner, 1, MPI_COMM_WORLD, &reqs[1]);
+
+            MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
+
+            if (pid < partner) { // append what I received
+              for (int b = 0; b < batch_size * two_pow_level; b++) {
+                recv_route_idces[b] = send_route_idces[b];
+              }
+              for (int b = 0; b < batch_size * two_pow_level; b++) {
+                recv_route_idces[b + (batch_size * two_pow_level)] = temp_recv[b];
+              }
+
+              // go up to two_pow_lvl processors forward and update the wires and occupancy matrix
+              for (int source_pid = pid + 1; source_pid <= pid + two_pow_level; source_pid++) {
+                if (source_pid >= nproc) break;
+                propagate_helper(source_pid);
+              }
+            }
+            else { assert(pid > partner); // prepend what I received
+              for (int b = 0; b < batch_size * two_pow_level; b++) {
+                recv_route_idces[b] = temp_recv[b];
+              }
+              for (int b = 0; b < batch_size * two_pow_level; b++) {
+                recv_route_idces[b + (batch_size * two_pow_level)] = send_route_idces[b];
+              }
+
+              // go up to two_pow_lvl processors back and update the wires and occupancy matrix
+              for (int source_pid = pid - two_pow_level; source_pid < pid; source_pid++) {
+                if (source_pid >= nproc) continue;
+                propagate_helper(source_pid);
+              }
+            }
+          }
+
+          for (int b = 0; b < batch_size * two_pow_level * 2; b++) {
+            send_route_idces[b] = recv_route_idces[b];
+          }
+      }
+
+      if (pid == ROOT) {
+        const double communicate_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - batch_propagate_start).count();
+        //std::cout << "Iteration " << iter << ", Batch " << batch << " Propagate time: " << std::fixed << std::setprecision(10) << communicate_time << '\n';
+      }*/
+
+
+      // Propagate batch updates and also probably do .clear() on the batch (maybe fact check this)
+      // .clear() is not needed, since the batch resets at the top of the middle loop
+      int send_target = (pid + 1) % nproc;
+      int recv_partner = (pid + (nproc - 1)) % nproc;
+      int send_route_idces[batch_size];
+      int recv_route_idces[batch_size];
+
+      // Take the recv_route_idces, determine which wires they belong to, and update
+      auto hop_helper = [&](int hop) {
+        if (hop == 0) {
+          MPI_Isend(&(best_route_idces[0]), batch_size, MPI_INT, send_target, 1, MPI_COMM_WORLD, &reqs[0]);
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &reqs[1]);
+          //MPI_Recv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 1, MPI_COMM_WORLD, &stats[0]);
+        }
+        else {
+          //up here changed recv_partner with send_target
+          MPI_Isend(&(send_route_idces[0]), batch_size, MPI_INT, send_target, 2, MPI_COMM_WORLD, &reqs[0]);
+          //changed reqs[0] to reqs[1]
+          MPI_Irecv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 2, MPI_COMM_WORLD, &reqs[1]);
+          //MPI_Recv(&(recv_route_idces[0]), batch_size, MPI_INT, recv_partner, 2, MPI_COMM_WORLD, &stats[0]);
+        }
+
+
+        // the wires I'm about to process, where did they come from?
+        // the "source" should essentiall travel backwards (so pid - 1 -> pid - 2 -> ...)
+        // int wire_origin_pid = recv_partner + (nproc - hop) % nproc;
+        int wire_origin_pid = (pid - hop - 1 + nproc) % nproc; //CHANGED
+        assert(wire_origin_pid >= 0);
+
+        int recv_wires = num_wires / nproc;
+        recv_wires += wire_origin_pid < num_wires % nproc ? 1 : 0;
+        int recv_start = (num_wires / nproc) * wire_origin_pid;
+        recv_start += wire_origin_pid < num_wires % nproc ? wire_origin_pid : num_wires % nproc;
+        int recv_end = recv_start + recv_wires;
+
+        //MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
+
+        //for (int w = 0; w < recv_wires; w++) {
+        for (int w = 0; w < batch_size; w++) {
+          int wire_num = recv_start + w + (batch * batch_size);
+          //if (wire_num >= num_wires) continue;
+          if (wire_num >= recv_end) continue;
+
+          Wire wire = wires[wire_num];
+          int dx = wire.end_x - wire.start_x;
+          int dy = wire.end_y - wire.start_y;
+          int num_routes = abs(dx) + abs(dy);
+
+          //assert(recv_route_idces[w] > -1);
+
+          // If past first iteration:
+          if (iter > 0) {
+            if (all_routes[wire_num] != recv_route_idces[w]) { // NEW!
+              if (dx != 0 && dy != 0) {
+                  assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+                  assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
+                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 572");
+                  //printf("%i: Recv Idx = %i [Line %i]\n", pid, recv_route_idces[w], __LINE__);
+
+                  draw_wire(wire, -1);
+              } else if (dx == 0) {
+                  vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
+              } else if (dy == 0) {
+                  horizontal_line(wire.start_x, wire.end_x, wire.start_y, -1);
+              }
+
+              if (recv_route_idces[w] > -1 && recv_route_idces[w] < abs(dx)) {
+                wire.bend1_x = wire.start_x + ((recv_route_idces[w] + 1) * (dx >= 0 ? 1 : -1));
+                wire.bend1_y = wire.start_y;
+              }
+              else if (recv_route_idces[w] > -1 && recv_route_idces[w] < num_routes) {
+                wire.bend1_x = wire.start_x;
+                wire.bend1_y = wire.start_y + ((recv_route_idces[w] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
+              }
+
+              if (dx != 0 && dy != 0) {
+                  assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 595");
+                  assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+                  assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
+                  //printf("%i: Recv Idx = %i [Line %i]\n", pid, recv_route_idces[w], __LINE__);
+
+                  draw_wire(wire, 1);
+              } else if (dy == 0) {
+                  horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+              } else if (dx == 0) {
+                  vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+              }
+              //printf("DEBUG: Success for processor %i!\n", pid);
+              all_routes[wire_num] = recv_route_idces[w];
+            }
+          }
+          else {
             if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
             else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
             else {
               assert(wire.start_x != wire.end_x && wire.start_y != wire.end_y && "Attempting to draw wire around Line 611");
+              assert(wire.bend1_x >= 0 && wire.bend1_x < dim_x && "bend1_x is defined");
+              assert(wire.bend1_y >= 0 && wire.bend1_y < dim_y && "bend1_y is defined");
+              //printf("%i: Recv Idx = %i [Line %i]\n", pid, recv_route_idces[w], __LINE__);
+
               draw_wire(wire, 1);
             }
             all_routes[wire_num] = recv_route_idces[w];
@@ -621,6 +786,8 @@ int main(int argc, char *argv[]) {
           }
         }
       };
+
+      const auto batch_propagate_start = std::chrono::steady_clock::now();
 
       for (int hop = 0; hop < nproc - 1; hop++) {
         hop_helper(hop);
@@ -632,10 +799,16 @@ int main(int argc, char *argv[]) {
         }
       }
 
+      /*if (pid == ROOT) {
+        const double communicate_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - batch_propagate_start).count();
+        std::cout << "Iteration " << iter << ", Batch " << batch << " Propagate time: " << std::fixed << std::setprecision(10) << communicate_time << '\n';
+      }*/
+
       // end batch
       batch++;
     }
     // end iteration
+    //if (pid == ROOT) std::cout << "\n";
   }
 
   //note that only root should do the updates
